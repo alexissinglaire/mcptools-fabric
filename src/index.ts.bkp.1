@@ -1,0 +1,285 @@
+#!/usr/bin/env node
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ToolSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import fs from "fs/promises";
+import path from "path";
+import os from 'os';
+import { StringValidation, z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { diffLines, createTwoFilesPatch } from 'diff';
+import { minimatch } from 'minimatch';
+
+import fetch from 'node-fetch';  // Import node-fetch
+
+import { Logger } from './type.js'
+import yargs from 'yargs'
+import { hideBin } from 'yargs/helpers'
+
+interface ApiKeyVerificationResponse {
+  apiKeyValid: boolean;
+  // Add other expected properties if your API response has them
+}
+
+interface FabricGetPatternInfoResponse {
+  Name: string;
+  Description: String;
+  Pattern: String;
+}
+
+// Command line argument parsing
+const args = process.argv.slice(2);
+if (args.length === 0) {
+  console.error("Usage: mcp-fabric-tools ");
+  process.exit(1);
+}
+
+const log = (...args: any[]) => console.log('[mcpfabrictools]', ...args)
+const logStderr = (...args: any[]) => console.error('[mcpfabrictools]', ...args)
+
+const noneLogger: Logger = {
+  info: () => {},
+  error: () => {},
+}
+
+
+
+const getLogger = ({
+  logLevel,
+  outputTransport,
+}: {
+  logLevel: string
+  outputTransport: string
+}): Logger => {
+  if (logLevel === 'none') {
+    return noneLogger
+  }
+
+  if (outputTransport === 'stdio') {
+    return { info: logStderr, error: logStderr }
+  }
+
+  return { info: log, error: logStderr }
+}
+
+const argv = yargs(hideBin(process.argv))
+  .option('logLevel', {
+    choices: ['info', 'none'] as const,
+    default: 'info',
+    description: 'Logging level',
+  })
+
+  .help()
+  .parseSync()
+
+
+const logger = getLogger({
+  logLevel: argv.logLevel,
+  outputTransport: argv.outputTransport as string,
+})
+
+logger.info('Starting...')
+logger.info(
+  'welcome to mcp server for fabric tools',
+)
+
+var API_KEY : string = process.env.API_KEY ?? 'xxx';
+var FABRIC_URL: string = process.env.FABRIC_URL ?? 'http://172.28.144.63:8086';
+
+//console.error("Env variable for API_KEY: ", API_KEY);
+//const isApiKeyValid = await verifyApiKey(API_KEY);
+//if (!isApiKeyValid) {
+//    console.error('Invalid API_KEY. Server cannot start.');
+//    process.exit(1);
+//}
+
+async function verifyApiKey(apiKey: string): Promise<boolean> {
+  const verificationUrl = 'https://strictly-adjusted-ewe.ngrok-free.app/webhook/a7ea1ea7-ac73-4dd6-beb7-600d25a1cb14'; // Replace with your API verification endpoint
+  try {
+    const response = await fetch(verificationUrl, {
+      method: 'POST',
+      headers: {
+        'X-API-Key': apiKey, // Sending API key in the header
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (response.ok) {
+      console.error("goes here - 1");
+      const result = (await response.json()) as ApiKeyVerificationResponse; // Cast the result
+      //console.error("goes here - 1.1:", result.apiKeyValid);
+      return result.apiKeyValid; // Assuming the server returns { isValid: true/false }
+    } else {
+      console.error("goes here - 2");
+      console.error(`API Key verification failed with status: ${response.status}`);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error verifying API Key:', error);
+    return false;
+  }
+}
+
+// Schema definitions
+const FabricSendRequestArgsSchema = z.object({
+  user_input: z.string(),
+  pattern_name: z.string(),
+});
+
+const FabricGetPatternInfoArgsSchema = z.object({
+  pattern_name: z.string(),
+});
+
+
+const ToolInputSchema = ToolSchema.shape.inputSchema;
+type ToolInput = z.infer<typeof ToolInputSchema>;
+
+interface FileInfo {
+  size: number;
+  created: Date;
+  modified: Date;
+  accessed: Date;
+  isDirectory: boolean;
+  isFile: boolean;
+  permissions: string;
+}
+
+
+
+// Server setup
+const server = new Server(
+  {
+    name: "secure-filesystem-server",
+    version: "0.2.0",
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  },
+);
+
+// Tool implementations
+ 
+async function fabricGetPatternInfo(patternName: string): Promise<String> {
+  const getpatterninfoUrl = FABRIC_URL + "/patterns/" + patternName;
+  logger.info('inside async function fabricGetPatternInfo')
+  try {
+    const response = await fetch(getpatterninfoUrl, {
+      method: 'GET',
+      headers: {
+         
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (response.ok) {
+      console.error("goes here - 1");
+      const result = (await response.json()) as FabricGetPatternInfoResponse; // Cast the result
+      logger.error("testing logging error");
+      return String(result.Pattern);
+    } else {
+      console.error("goes here - 2");
+      console.error(`API Key verification failed with status: ${response.status}`);
+      //const result = (await response.json()) as FabricGetPatternInfoResponse;
+      return "response not okay";
+    }
+  } catch (error) {
+    console.error('Error retrieving Fabric Pattern Info:', error);
+     
+    return "error retrieving pattern info, check your Fabric server status";   
+  }
+
+  
+}
+
+
+// Tool handlers
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: "fabric_send_request",
+        description:
+          "Send request message to Fabric server. " +
+          "Handle processing user input using the given prompt name by Fabric server.",  
+        inputSchema: zodToJsonSchema(FabricSendRequestArgsSchema) as ToolInput,
+      },
+      {
+        name: "fabric_get_pattern_info",
+        description:
+          "Get prompt information from Fabric server. " +
+          "Handles request to get prompt/pattern detail from Fabric Server.",  
+        inputSchema: zodToJsonSchema(FabricGetPatternInfoArgsSchema) as ToolInput,
+      }
+       
+    ],
+  };
+});
+
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  try {
+    const { name, arguments: args } = request.params;
+
+    switch (name) {
+      case "fabric_send_request": {
+        const parsed = FabricSendRequestArgsSchema.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for fabric_send_request: ${parsed.error}`);
+        }
+        const validUserInput = parsed.data.user_input;
+        const validPatternName = parsed.data.pattern_name;
+        return {
+          content: [{ type: "text", text: "done" }],
+        }; 
+      }
+        
+      case "fabric_get_pattern_info": { 
+        logger.info('inside case fabric_get_pattern_info')
+        const parsed = FabricGetPatternInfoArgsSchema.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for fabric_get_pattern_info: ${parsed.error}`);
+        }
+         
+        const validPatternName = parsed.data.pattern_name;  
+        const responsePatternInfo = await fabricGetPatternInfo(validPatternName);
+         
+        return {
+          content: [{ type: "text", text: responsePatternInfo}],
+        };
+      }
+
+        
+       
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      content: [{ type: "text", text: `Error: ${errorMessage}` }],
+      isError: true,
+    };
+  }
+});
+
+// Start server
+async function runServer() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("MCP Server for Fabric tools running on stdio");
+   
+  console.error("[Environment Variable] API_KEY: ", API_KEY);
+}
+
+runServer().catch((error) => {
+  console.error("Fatal error running server:", error);
+  process.exit(1);
+});
