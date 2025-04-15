@@ -32,9 +32,9 @@ Node.js server implementing Model Context Protocol (MCP) for AI Prompt operation
 ## Usage with 5ire Desktop
 Command: npx -y @alexissinglaire/mcpfabrictools  <br>
 Environment Variable: <br>
-API_KEY <API key/token> <br>
-API_VER_URL <host of API Server to verify the key using Header Auth method> <br>
-PROMPT_SERVER_URL <host of Prompt Server> <br>
+API_KEY: API key/token> <br>
+API_VER_URL: host of API Server to verify the key using Header Auth method <br>
+PROMPT_SERVER_URL: host of Prompt Server <br>
 
 
 Note: your API server must return following json upon successfull verification. If the verification successfull, json apiKeyValid should set to true, else set to false.
